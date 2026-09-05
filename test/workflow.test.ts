@@ -28,12 +28,28 @@ test('builds the minimal v1 workflow plan', () => {
   );
 });
 
+test('pins the canonical v1 representation and digest', async () => {
+  const plan = workflow({ test: job([checkout(), run('npm test')]) });
+  assert.equal(
+    canonicalWorkflowPlan(plan),
+    '{"jobs":{"test":{"steps":[{"kind":"checkout"},{"command":"npm test","kind":"run"}]}},"version":1}',
+  );
+  assert.equal(await workflowPlanDigest(plan), '295d807fb27dd4da8021c763e4f2aa34bc7712bc9cf9087aa7c0b4861975afc7');
+});
+
 test('normalizes job names using Trunk check-name semantics', () => {
   assert.deepEqual(Object.keys(workflow({ '  test  ': job([checkout()]) }).jobs), ['test']);
   assert.throws(
     () => workflow({ test: job([checkout()]), ' test ': job([checkout()]) }),
     /duplicate workflow job "test" after normalization/,
   );
+});
+
+test('keeps special check names safe while returning a plain job map', () => {
+  const plan = workflow({ ['__proto__']: job([checkout()]) });
+  assert.equal(Object.getPrototypeOf(plan.jobs), Object.prototype);
+  assert.equal(Object.hasOwn(plan.jobs, '__proto__'), true);
+  assert.deepEqual(plan.jobs.__proto__, { steps: [{ kind: 'checkout' }] });
 });
 
 test('canonical form is independent of job insertion order', async () => {
