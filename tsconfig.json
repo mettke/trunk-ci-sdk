@@ -10,6 +10,7 @@
     "sourceMap": true,
     "outDir": "dist",
     "rootDir": "src",
+    "rewriteRelativeImportExtensions": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "forceConsistentCasingInFileNames": true,

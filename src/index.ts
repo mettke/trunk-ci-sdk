@@ -13,4 +13,4 @@ export {
   type RunStepV1,
   type WorkflowPlanV1,
   type WorkflowStepV1,
-} from './workflow.js';
+} from './workflow.ts';
