@@ -57,13 +57,18 @@ export function parseWorkflowPlan(input: unknown): WorkflowPlanV1 {
   const names = Object.keys(jobsInput);
   if (!names.length) throw new WorkflowValidationError('workflow must contain at least one job');
 
-  const jobs: Record<string, JobPlanV1> = Object.create(null) as Record<string, JobPlanV1>;
+  const jobs: Record<string, JobPlanV1> = {};
   for (const rawName of names) {
     const name = normalizeCheckName(rawName);
     if (Object.hasOwn(jobs, name)) {
       throw new WorkflowValidationError(`duplicate workflow job ${JSON.stringify(name)} after normalization`);
     }
-    jobs[name] = parseJob(jobsInput[rawName], `workflow.jobs[${JSON.stringify(rawName)}]`);
+    Object.defineProperty(jobs, name, {
+      value: parseJob(jobsInput[rawName], `workflow.jobs[${JSON.stringify(rawName)}]`),
+      enumerable: true,
+      writable: false,
+      configurable: false,
+    });
   }
 
   return Object.freeze({
