@@ -19,7 +19,9 @@ test('prepack builds the exported dist files into the npm tarball', () => {
   }>;
   assert.equal(packed.length, 1);
 
-  const paths = new Set(packed[0].files.map(({ path }) => path));
+  const [archive] = packed;
+  assert.ok(archive);
+  const paths = new Set(archive.files.map(({ path }) => path));
   assert.equal(paths.has('dist/index.js'), true, 'package is missing dist/index.js');
   assert.equal(paths.has('dist/index.d.ts'), true, 'package is missing dist/index.d.ts');
 });
