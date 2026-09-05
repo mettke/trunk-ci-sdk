@@ -2,7 +2,7 @@
 
 set -Eeuo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_DIR="${SCRIPT_DIR}"
 LOG_DIR="${VALIDATION_LOG_DIR:-${SCRIPT_DIR}/../validation-logs}"
 LOG_FILE="${LOG_DIR}/trunk-ci-sdk-validation-$(date '+%Y%m%d-%H%M%S').log"
@@ -60,9 +60,18 @@ echo "Started: $(date --iso-8601=seconds)"
 echo "Log:     ${LOG_FILE}"
 echo
 
-if [[ ! -d "${REPO_DIR}/.git" ]]; then
-  echo "ERROR: Expected Trunk CI SDK repository at:"
+if ! git -C "${REPO_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "ERROR: Expected Trunk CI SDK Git worktree at:"
   echo "  ${REPO_DIR}"
+  exit 1
+fi
+
+REPO_TOPLEVEL="$(git -C "${REPO_DIR}" rev-parse --show-toplevel)"
+REPO_TOPLEVEL="$(cd -- "${REPO_TOPLEVEL}" && pwd -P)"
+if [[ "${REPO_TOPLEVEL}" != "${REPO_DIR}" ]]; then
+  echo "ERROR: validate.sh must live at the repository worktree root"
+  echo "Script root: ${REPO_DIR}"
+  echo "Git root:    ${REPO_TOPLEVEL}"
   exit 1
 fi
 
