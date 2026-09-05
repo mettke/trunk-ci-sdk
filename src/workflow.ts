@@ -94,8 +94,16 @@ function parseJob(input: unknown, label: string): JobPlanV1 {
     throw new WorkflowValidationError(`${label}.steps must contain at least one step`);
   }
 
+  const steps: WorkflowStepV1[] = [];
+  for (let index = 0; index < value.steps.length; index += 1) {
+    if (!Object.hasOwn(value.steps, index)) {
+      throw new WorkflowValidationError(`${label}.steps[${index}] is missing`);
+    }
+    steps.push(parseStep(value.steps[index], `${label}.steps[${index}]`));
+  }
+
   return Object.freeze({
-    steps: Object.freeze(value.steps.map((step, index) => parseStep(step, `${label}.steps[${index}]`))),
+    steps: Object.freeze(steps),
   });
 }
 

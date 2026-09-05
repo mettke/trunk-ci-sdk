@@ -91,6 +91,20 @@ test('parser rejects unknown step kinds and fields', () => {
   );
 });
 
+test('parser rejects sparse step arrays', () => {
+  const onlyHole = new Array(1);
+  assert.throws(
+    () => parseWorkflowPlan({ version: 1, jobs: { test: { steps: onlyHole } } }),
+    /workflow\.jobs\["test"\]\.steps\[0\] is missing/,
+  );
+
+  const interiorHole = [checkout(), , run('npm test')];
+  assert.throws(
+    () => parseWorkflowPlan({ version: 1, jobs: { test: { steps: interiorHole } } }),
+    /workflow\.jobs\["test"\]\.steps\[1\] is missing/,
+  );
+});
+
 test('empty workflows, jobs and run commands fail closed', () => {
   assert.throws(() => workflow({}), /at least one job/);
   assert.throws(() => job([]), /at least one step/);
