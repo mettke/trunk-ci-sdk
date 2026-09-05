@@ -12,7 +12,7 @@ test('prepack builds the exported dist files into the npm tarball', () => {
     encoding: 'utf8',
   });
 
-  const jsonStart = output.indexOf('[{');
+  const jsonStart = output.search(/\[\s*\{/);
   assert.notEqual(jsonStart, -1, `npm pack did not return JSON: ${output}`);
   const packed = JSON.parse(output.slice(jsonStart)) as Array<{
     files: Array<{ path: string }>;
