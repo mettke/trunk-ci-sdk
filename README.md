@@ -8,12 +8,12 @@ This repository is the authoring/composition side of Trunk CI. Repository code p
 
 ## Quick start
 
-A workflow is a set of named jobs. Each job contains ordered steps. Version 1 supports two step kinds: checkout the exact Trunk candidate and run a command in that workspace.
+A repository's candidate-owned workflow entry is the fixed `trunk-ci.ts` path. It must default-export the workflow plan:
 
 ```ts
 import { checkout, job, run, workflow } from 'trunk-ci-sdk';
 
-const plan = workflow({
+export default workflow({
   test: job([
     checkout(),
     run('npm ci'),
@@ -27,7 +27,9 @@ const plan = workflow({
 });
 ```
 
-A repository's candidate-owned workflow entry is the fixed `trunk-ci.ts` path. Treat that TypeScript file as an authoring frontend whose result is the data plan shown above; Trunk does not execute arbitrary repository TypeScript in its control-plane process. The workflow resolver runs against the exact immutable candidate being checked, then Trunk validates the resulting data again at its trust boundary.
+A workflow is a set of named jobs. Each job contains ordered steps. Version 1 supports two step kinds: checkout the exact Trunk candidate and run a command in that workspace.
+
+Treat `trunk-ci.ts` as an authoring frontend whose default export is the data plan shown below. Repository-authored TypeScript is evaluated only in the bounded candidate workflow sandbox, not inside the Trunk control-plane process. The resolver imports the exact candidate's `trunk-ci.ts`, requires a default export, serializes that value as JSON, and passes the bounded result back across the trust boundary. Trunk then independently validates and canonicalizes that data before it can become CI evidence.
 
 The example above resolves to this version-1 plan shape:
 
@@ -53,31 +55,34 @@ The example above resolves to this version-1 plan shape:
 }
 ```
 
-`checkout()` is deliberately not a branch or ref selector. It means materialize the exact immutable candidate already bound to the CI attempt. Branch names and other mutable refs are not workflow authority.
+`checkout()` is deliberately not a branch or ref selector. It materializes the exact immutable candidate already bound to the CI attempt into that job's isolated workspace. Calling `checkout()` again resets that job workspace back to the same exact candidate.
 
-`run(command)` executes the supplied non-empty command in that checked-out workspace. The v1 contract intentionally does not include artifacts, caches, tool setup, secret declarations, provider queues, hosted-agent images, or BuildKit-specific helpers.
+`run(command)` executes the supplied non-empty command in the job workspace. A run step is rejected at execution time if that job has not completed a preceding checkout step. The SDK's data-shape validation does not itself enforce this execution-order rule, so author jobs with `checkout()` before their first `run()`.
+
+The v1 contract intentionally does not include artifacts, caches, tool setup, secret declarations, provider queues, hosted-agent images, or Buildkite-specific helpers.
 
 ## Where authority lives
 
-The SDK helps repository authors construct and inspect a valid plan, but SDK success is not authorization and is not proof that Trunk will accept a request. Trunk independently validates the resolver output and binds it to the exact candidate revision before CI evidence can count for that candidate.
+The SDK helps repository authors construct and inspect a valid plan, but SDK success is not authorization and is not proof that Trunk will accept or successfully execute a workflow. Trunk independently validates the resolver output, binds it to the exact candidate revision, and applies execution-time constraints before CI evidence can count for that candidate.
 
 Important consequences:
 
 - **Candidate-owned definition:** the workflow definition travels with the candidate being tested instead of being selected from a mutable branch after dispatch.
 - **Provider-neutral plan:** Buildkite may execute/schedule work, but Buildkite pipeline, queue, webhook, image, credential, and routing concepts are not part of the workflow syntax.
-- **Strict/fail-closed validation:** unknown fields, unknown step kinds, missing required fields, malformed job/step objects, empty workflows, empty step lists, and empty run commands are rejected.
+- **Strict/fail-closed shape validation:** unknown fields, unknown step kinds, missing required fields, malformed job/step objects, empty workflows, empty step lists, and empty run commands are rejected.
+- **Execution also fails closed:** a syntactically valid run step cannot execute before checkout in the same job, and a non-zero command exit fails that workflow execution.
 - **Exact candidate checkout:** `checkout` refers to the already-authorized immutable candidate, never an author-selected ref.
 - **Canonicalization is deterministic:** object keys are serialized lexicographically; job map insertion order therefore does not change the canonical representation or digest. Array order remains semantic, so step order does matter.
 - **Digest is correlation/audit identity, not landing authority:** `workflowPlanDigest()` identifies the canonical plan. Trunk's authorization remains bound to the exact candidate and its current revision/check state.
-- **Repository TypeScript is untrusted input:** the control plane consumes the resulting bounded data plan and re-validates it rather than trusting repository-side code or SDK validation.
+- **Repository TypeScript is untrusted input:** candidate code runs in the candidate sandbox; the control plane consumes only the resulting bounded data plan and re-validates it rather than trusting repository-side code or SDK validation.
 
 ## Validation and failure behavior
 
-Public helpers validate authored values before returning frozen plan fragments. `parseWorkflowPlan()` is the public trust-boundary parser for unknown data and enforces the complete v1 shape.
+Public helpers validate authored values before returning frozen plan fragments. `parseWorkflowPlan()` is the public strict parser for unknown workflow-plan data and enforces the complete v1 data shape.
 
-Validation throws `WorkflowValidationError`. The current SDK exposes no separate machine-readable validation error-code field; callers that need to distinguish validation failure can use the error class rather than parsing message text.
+Validation throws `WorkflowValidationError`. The current SDK exposes no separate machine-readable validation error-code field; callers that need to distinguish SDK validation failure can use the error class rather than parsing message text.
 
-Current v1 rules include:
+Current v1 shape rules include:
 
 - a workflow object has exactly `version` and `jobs`;
 - `version` must equal `WORKFLOW_PLAN_VERSION` (`1`);
@@ -89,6 +94,8 @@ Current v1 rules include:
 - checkout steps contain exactly `{ kind: 'checkout' }`;
 - run steps contain exactly `{ kind: 'run', command: string }`, and the command must contain non-whitespace text;
 - all other step kinds and extra fields are rejected.
+
+Those are data-shape rules, not the complete execution contract. In particular, `parseWorkflowPlan()` accepts a plan containing a `run` step before `checkout`; the candidate workflow executor rejects that ordering when it attempts to execute the job. Keeping this distinction explicit avoids treating parser acceptance as proof that a plan can run successfully.
 
 Constructors and parsers return frozen objects/arrays. This prevents accidental mutation of an already-built plan in ordinary authoring code; callers should still regard Trunk's independently parsed/canonicalized copy as authoritative.
 
@@ -104,21 +111,23 @@ The literal current plan version, `1`. `WorkflowPlanV1.version` is typed to this
 
 #### `WorkflowValidationError`
 
-`Error` subclass used for SDK validation failures. Its `name` is `WorkflowValidationError`. The current class has no separate stable error-code field.
+`Error` subclass used for SDK data-shape validation failures. Its `name` is `WorkflowValidationError`. The current class has no separate stable error-code field. Trunk workflow resolution/execution failures are control-plane/runtime errors and are not represented by this SDK error class.
 
 ### Authoring helpers
 
 #### `checkout(): CheckoutStepV1`
 
-Creates a frozen checkout step for the exact immutable candidate bound to the CI attempt. Takes no ref, branch, repository, provider, or credential argument.
+Creates a frozen checkout step for the exact immutable candidate bound to the CI attempt. Takes no ref, branch, repository, provider, or credential argument. At execution time the step materializes/reset the isolated job workspace to that candidate.
 
 #### `run(command: string): RunStepV1`
 
 Creates a frozen run step. `command` must be a string containing non-whitespace text or the function throws `WorkflowValidationError`. The command string is preserved as authored; validation only requires that its trimmed form is non-empty.
 
+At execution time Trunk runs the command with ordinary shell exit semantics in the checked-out job workspace. A preceding checkout in the same job is required; that ordering constraint is enforced by the executor, not by this constructor.
+
 #### `job(steps: readonly WorkflowStepV1[]): JobPlanV1`
 
-Builds and validates one frozen job. At least one supported step is required. Each step is parsed strictly, so extra fields or unsupported kinds fail closed.
+Builds and validates one frozen job. At least one supported step is required. Each step is parsed strictly, so extra fields or unsupported kinds fail closed. The helper validates plan shape but does not require the first step to be checkout.
 
 #### `workflow(jobs: Readonly<Record<string, JobPlanV1>>): WorkflowPlanV1`
 
@@ -165,7 +174,7 @@ type RunStepV1 = Readonly<{
 }>;
 ```
 
-A command step executed in the checked-out candidate workspace.
+A command step executed in the job workspace after checkout.
 
 #### `WorkflowStepV1`
 
@@ -194,7 +203,7 @@ type WorkflowPlanV1 = Readonly<{
 }>;
 ```
 
-The complete provider-neutral v1 workflow data contract.
+The complete provider-neutral v1 workflow data contract. A candidate `trunk-ci.ts` must default-export a JSON-serializable value that resolves to this validated shape.
 
 ## Canonicalization example
 
@@ -223,7 +232,7 @@ canonicalWorkflowPlan(first) === canonicalWorkflowPlan(second); // true
 await workflowPlanDigest(first) === await workflowPlanDigest(second); // true
 ```
 
-Step order is different: arrays are semantic. For example, moving `checkout` after `run` produces a different canonical plan and digest even though the same two step objects are present.
+Arrays are semantic. For example, moving `checkout` after `run` produces a different canonical plan and digest even though the same two step objects are present. In Trunk's current executor that reordered plan also fails execution because the run step occurs before checkout.
 
 That distinction is useful when debugging digest mismatches: reordering object properties is irrelevant; reordering workflow steps changes the workflow.
 
