@@ -31,6 +31,8 @@ A workflow is a set of named jobs. Each job contains ordered steps. Version 1 su
 
 Treat `trunk-ci.ts` as an authoring frontend whose default export is the data plan shown below. Repository-authored TypeScript is evaluated only in the bounded candidate workflow sandbox, not inside the Trunk control-plane process. The resolver imports the exact candidate's `trunk-ci.ts`, requires a default export, serializes that value as JSON, and passes the bounded result back across the trust boundary. Trunk then independently validates and canonicalizes that data before it can become CI evidence.
 
+The bare `trunk-ci-sdk` import in `trunk-ci.ts` is part of that runtime boundary. During candidate resolution Trunk intercepts exactly that module specifier and supplies its trusted SDK runtime. Candidate dependencies do not choose or replace the SDK implementation used by the resolver. Do not add a package-install step merely to make the runtime import work. The repository package remains useful as the public TypeScript authoring/contract surface, but its current `0.0.0` package identity and distribution are still pre-release.
+
 The example above resolves to this version-1 plan shape:
 
 ```json
@@ -69,6 +71,7 @@ Important consequences:
 
 - **Candidate-owned definition:** the workflow definition travels with the candidate being tested instead of being selected from a mutable branch after dispatch.
 - **Provider-neutral plan:** Buildkite may execute/schedule work, but Buildkite pipeline, queue, webhook, image, credential, and routing concepts are not part of the workflow syntax.
+- **Trusted SDK runtime:** the candidate resolver supplies the `trunk-ci-sdk` runtime for the exact bare module specifier instead of trusting a candidate-selected implementation.
 - **Strict/fail-closed shape validation:** unknown fields, unknown step kinds, missing required fields, malformed job/step objects, empty workflows, empty step lists, and empty run commands are rejected.
 - **Execution also fails closed:** a syntactically valid run step cannot execute before checkout in the same job, and a non-zero command exit fails that workflow execution.
 - **Exact candidate checkout:** `checkout` refers to the already-authorized immutable candidate, never an author-selected ref.
@@ -117,7 +120,7 @@ The literal current plan version, `1`. `WorkflowPlanV1.version` is typed to this
 
 #### `checkout(): CheckoutStepV1`
 
-Creates a frozen checkout step for the exact immutable candidate bound to the CI attempt. Takes no ref, branch, repository, provider, or credential argument. At execution time the step materializes/reset the isolated job workspace to that candidate.
+Creates a frozen checkout step for the exact immutable candidate bound to the CI attempt. Takes no ref, branch, repository, provider, or credential argument. At execution time the step materializes or resets the isolated job workspace to that candidate.
 
 #### `run(command: string): RunStepV1`
 
