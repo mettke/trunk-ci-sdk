@@ -73,9 +73,9 @@ Important consequences:
 
 ## Validation and failure behavior
 
-All public constructors that accept authored values validate before returning a frozen plan fragment. `parseWorkflowPlan()` is the public trust-boundary parser for unknown data and enforces the complete v1 shape.
+Public helpers validate authored values before returning frozen plan fragments. `parseWorkflowPlan()` is the public trust-boundary parser for unknown data and enforces the complete v1 shape.
 
-Validation throws `WorkflowValidationError`. Callers should treat it as a definitive invalid-plan result for the supplied input rather than retrying the same bytes. The message describes the first rejected condition; it is diagnostic text, not a stable machine-readable error-code contract.
+Validation throws `WorkflowValidationError`. The current SDK exposes no separate machine-readable validation error-code field; callers that need to distinguish validation failure can use the error class rather than parsing message text.
 
 Current v1 rules include:
 
@@ -104,7 +104,7 @@ The literal current plan version, `1`. `WorkflowPlanV1.version` is typed to this
 
 #### `WorkflowValidationError`
 
-`Error` subclass used for SDK validation failures. Its `name` is `WorkflowValidationError`. Error messages are intended for diagnostics and human feedback; no separate stable error-code field is currently exposed by this SDK.
+`Error` subclass used for SDK validation failures. Its `name` is `WorkflowValidationError`. The current class has no separate stable error-code field.
 
 ### Authoring helpers
 
@@ -198,7 +198,7 @@ The complete provider-neutral v1 workflow data contract.
 
 ## Canonicalization example
 
-These two authored objects have different insertion order but the same validated plan identity:
+These two objects differ only in object/job-map insertion order and therefore have the same canonical representation and digest:
 
 ```ts
 import { canonicalWorkflowPlan, workflowPlanDigest } from 'trunk-ci-sdk';
@@ -213,14 +213,17 @@ const first = {
 
 const second = {
   jobs: {
-    build: { steps: [{ command: 'npm run build', kind: 'run' }, { kind: 'checkout' }] },
-    test: { steps: [{ command: 'npm test', kind: 'run' }, { kind: 'checkout' }] },
+    build: { steps: [{ kind: 'checkout' }, { command: 'npm run build', kind: 'run' }] },
+    test: { steps: [{ kind: 'checkout' }, { command: 'npm test', kind: 'run' }] },
   },
   version: 1,
 };
+
+canonicalWorkflowPlan(first) === canonicalWorkflowPlan(second); // true
+await workflowPlanDigest(first) === await workflowPlanDigest(second); // true
 ```
 
-However, the example above intentionally **does not** have the same plan identity because `second` also reverses each job's step array. Step order is semantic. If only object-key/job-map insertion order changes while arrays stay in the same order, `canonicalWorkflowPlan()` and `workflowPlanDigest()` are equal.
+Step order is different: arrays are semantic. For example, moving `checkout` after `run` produces a different canonical plan and digest even though the same two step objects are present.
 
 That distinction is useful when debugging digest mismatches: reordering object properties is irrelevant; reordering workflow steps changes the workflow.
 
@@ -248,6 +251,6 @@ The package has no runtime dependencies today. Keep additions provider-neutral: 
 
 ## Current v1 limits
 
-The small surface is intentional. Version 1 has only named jobs, exact-candidate checkout, and command execution. It currently has no workflow-level dependencies, conditional execution, matrices, artifacts, caches, service containers, secret declarations, provider selection, retries, timeouts, or deployment semantics.
+The small surface is intentional. The current v1 data model represents named jobs containing only exact-candidate `checkout` and command `run` steps. Capabilities not represented by that shape are not part of v1, and strict parsing rejects additional fields or step kinds rather than silently accepting them.
 
-Do not encode provider-specific behavior into job names or command conventions and then treat those conventions as part of the SDK contract. When the workflow model gains a capability, it should be represented explicitly and validated by both the SDK and Trunk control plane.
+Provider-specific execution configuration belongs behind Trunk's integration boundary rather than in this workflow contract.
