@@ -61,7 +61,7 @@ The example above resolves to this version-1 plan shape:
 
 `run(command)` executes the supplied non-empty command in the job workspace. A run step is rejected at execution time if that job has not completed a preceding checkout step. The SDK's data-shape validation does not itself enforce this execution-order rule, so author jobs with `checkout()` before their first `run()`.
 
-The v1 contract intentionally does not include artifacts, caches, tool setup, secret declarations, provider queues, hosted-agent images, or Buildkite-specific helpers.
+The v1 contract intentionally does not include artifacts, caches, tool setup, secret declarations, provider queues, hosted-agent images, or provider-specific helpers.
 
 ## Where authority lives
 
@@ -70,7 +70,7 @@ The SDK helps repository authors construct and inspect a valid plan, but SDK suc
 Important consequences:
 
 - **Candidate-owned definition:** the workflow definition travels with the candidate being tested instead of being selected from a mutable branch after dispatch.
-- **Provider-neutral plan:** Buildkite may execute/schedule work, but Buildkite pipeline, queue, webhook, image, credential, and routing concepts are not part of the workflow syntax.
+- **Provider-neutral plan:** Trunk may use a managed execution provider behind this contract, but provider pipeline, queue, webhook, image, credential, and routing concepts are not part of the workflow syntax.
 - **Trusted SDK runtime:** the candidate resolver supplies the `trunk-ci-sdk` runtime for the exact bare module specifier instead of trusting a candidate-selected implementation.
 - **Strict/fail-closed shape validation:** unknown fields, unknown step kinds, missing required fields, malformed job/step objects, empty workflows, empty step lists, and empty run commands are rejected.
 - **Execution also fails closed:** a syntactically valid run step cannot execute before checkout in the same job, and a non-zero command exit fails that workflow execution.
