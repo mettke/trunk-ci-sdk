@@ -7,16 +7,20 @@ import {
   job,
   parseWorkflowPlan,
   run,
-  workflowV2,
   workflowPlanDigest,
+  type WorkflowPlanV2,
 } from '../src/index.ts';
 
-test('builds candidate, landed and cleanup workflows in v2', () => {
-  assert.deepEqual(
-    workflowV2({
+function authoredV2Plan(): WorkflowPlanV2 {
+  return {
+    version: 2,
+    workflows: {
       'Candidate CI': {
         trigger: 'candidate',
-        jobs: { test: job([checkout(), run('npm test')]) },
+        jobs: {
+          test: job([checkout(), run('npm test')]),
+          lint: job([checkout(), run('npm run lint')]),
+        },
       },
       'Post-land verification': {
         trigger: 'landed',
@@ -26,45 +30,35 @@ test('builds candidate, landed and cleanup workflows in v2', () => {
         trigger: 'cleanup',
         jobs: { cleanup: job([checkout(), run('npm run cleanup')]) },
       },
-    }),
-    {
-      version: 2,
-      workflows: {
-        'Candidate CI': {
-          trigger: 'candidate',
-          jobs: { test: { steps: [{ kind: 'checkout' }, { kind: 'run', command: 'npm test' }] } },
-        },
-        'Post-land verification': {
-          trigger: 'landed',
-          jobs: { verify: { steps: [{ kind: 'checkout' }, { kind: 'run', command: 'npm run verify' }] } },
-        },
-        Cleanup: {
-          trigger: 'cleanup',
-          jobs: { cleanup: { steps: [{ kind: 'checkout' }, { kind: 'run', command: 'npm run cleanup' }] } },
+    },
+  } satisfies WorkflowPlanV2;
+}
+
+test('authors candidate, landed and cleanup workflows as the V2 data contract', () => {
+  assert.deepEqual(authoredV2Plan(), {
+    version: 2,
+    workflows: {
+      'Candidate CI': {
+        trigger: 'candidate',
+        jobs: {
+          test: { steps: [{ kind: 'checkout' }, { kind: 'run', command: 'npm test' }] },
+          lint: { steps: [{ kind: 'checkout' }, { kind: 'run', command: 'npm run lint' }] },
         },
       },
+      'Post-land verification': {
+        trigger: 'landed',
+        jobs: { verify: { steps: [{ kind: 'checkout' }, { kind: 'run', command: 'npm run verify' }] } },
+      },
+      Cleanup: {
+        trigger: 'cleanup',
+        jobs: { cleanup: { steps: [{ kind: 'checkout' }, { kind: 'run', command: 'npm run cleanup' }] } },
+      },
     },
-  );
+  });
 });
 
 test('pins the canonical v2 representation and digest to Trunk parity', async () => {
-  const plan = workflowV2({
-    'Candidate CI': {
-      trigger: 'candidate',
-      jobs: {
-        test: job([checkout(), run('npm test')]),
-        lint: job([checkout(), run('npm run lint')]),
-      },
-    },
-    'Post-land verification': {
-      trigger: 'landed',
-      jobs: { verify: job([checkout(), run('npm run verify')]) },
-    },
-    Cleanup: {
-      trigger: 'cleanup',
-      jobs: { cleanup: job([checkout(), run('npm run cleanup')]) },
-    },
-  });
+  const plan = authoredV2Plan();
 
   assert.equal(
     canonicalWorkflowPlan(plan),
@@ -74,34 +68,48 @@ test('pins the canonical v2 representation and digest to Trunk parity', async ()
 });
 
 test('v2 canonical form is independent of workflow and job insertion order', async () => {
-  const first = workflowV2({
-    Beta: { trigger: 'candidate', jobs: { test: job([checkout()]), lint: job([checkout()]) } },
-    Alpha: { trigger: 'candidate', jobs: { build: job([checkout()]) } },
-  });
-  const second = workflowV2({
-    Alpha: { trigger: 'candidate', jobs: { build: job([checkout()]) } },
-    Beta: { trigger: 'candidate', jobs: { lint: job([checkout()]), test: job([checkout()]) } },
-  });
+  const first: WorkflowPlanV2 = {
+    version: 2,
+    workflows: {
+      Beta: { trigger: 'candidate', jobs: { test: job([checkout()]), lint: job([checkout()]) } },
+      Alpha: { trigger: 'candidate', jobs: { build: job([checkout()]) } },
+    },
+  };
+  const second: WorkflowPlanV2 = {
+    version: 2,
+    workflows: {
+      Alpha: { trigger: 'candidate', jobs: { build: job([checkout()]) } },
+      Beta: { trigger: 'candidate', jobs: { lint: job([checkout()]), test: job([checkout()]) } },
+    },
+  };
 
   assert.equal(canonicalWorkflowPlan(first), canonicalWorkflowPlan(second));
   assert.equal(await workflowPlanDigest(first), await workflowPlanDigest(second));
 });
 
-test('normalizes v2 workflow and job names and rejects normalized duplicates', () => {
-  const plan = workflowV2({
-    '  Candidate CI  ': {
-      trigger: 'candidate',
-      jobs: { '  test  ': job([checkout()]) },
+test('parser normalizes v2 workflow and job names and rejects normalized duplicates', () => {
+  const plan = parseWorkflowPlan({
+    version: 2,
+    workflows: {
+      '  Candidate CI  ': {
+        trigger: 'candidate',
+        jobs: { '  test  ': job([checkout()]) },
+      },
     },
   });
+  assert.equal(plan.version, 2);
+  if (plan.version !== 2) assert.fail('expected WorkflowPlanV2');
   assert.deepEqual(Object.keys(plan.workflows), ['Candidate CI']);
   assert.deepEqual(Object.keys(plan.workflows['Candidate CI']?.jobs ?? {}), ['test']);
 
   assert.throws(
     () =>
-      workflowV2({
-        Test: { trigger: 'candidate', jobs: { test: job([checkout()]) } },
-        ' Test ': { trigger: 'candidate', jobs: { test: job([checkout()]) } },
+      parseWorkflowPlan({
+        version: 2,
+        workflows: {
+          Test: { trigger: 'candidate', jobs: { test: job([checkout()]) } },
+          ' Test ': { trigger: 'candidate', jobs: { test: job([checkout()]) } },
+        },
       }),
     /duplicate workflow "Test" after normalization/,
   );
@@ -109,26 +117,42 @@ test('normalizes v2 workflow and job names and rejects normalized duplicates', (
 
 test('v2 workflow and job identities reject transport-unsafe Unicode while allowing CRLF and supplementary Unicode', () => {
   assert.throws(
-    () => workflowV2({ ['bad\0name']: { trigger: 'candidate', jobs: { test: job([checkout()]) } } }),
+    () =>
+      parseWorkflowPlan({
+        version: 2,
+        workflows: { ['bad\0name']: { trigger: 'candidate', jobs: { test: job([checkout()]) } } },
+      }),
     /workflow name must not contain NUL/,
   );
   assert.throws(
-    () => workflowV2({ ['bad\ud800']: { trigger: 'candidate', jobs: { test: job([checkout()]) } } }),
+    () =>
+      parseWorkflowPlan({
+        version: 2,
+        workflows: { ['bad\ud800']: { trigger: 'candidate', jobs: { test: job([checkout()]) } } },
+      }),
     /workflow name must be well-formed Unicode/,
   );
   assert.throws(
-    () => workflowV2({ Test: { trigger: 'candidate', jobs: { ['bad\udc00']: job([checkout()]) } } }),
+    () =>
+      parseWorkflowPlan({
+        version: 2,
+        workflows: { Test: { trigger: 'candidate', jobs: { ['bad\udc00']: job([checkout()]) } } },
+      }),
     /WorkflowPlanV2 job name must be well-formed Unicode/,
   );
 
-  const plan = workflowV2({
-    'Candidate\r\n🚀': { trigger: 'candidate', jobs: { 'test\r\n🧪': job([checkout()]) } },
+  const plan = parseWorkflowPlan({
+    version: 2,
+    workflows: {
+      'Candidate\r\n🚀': { trigger: 'candidate', jobs: { 'test\r\n🧪': job([checkout()]) } },
+    },
   });
+  if (plan.version !== 2) assert.fail('expected WorkflowPlanV2');
   assert.equal(Object.hasOwn(plan.workflows, 'Candidate\r\n🚀'), true);
   assert.equal(Object.hasOwn(plan.workflows['Candidate\r\n🚀']?.jobs ?? {}, 'test\r\n🧪'), true);
 });
 
-test('rejects unsupported v2 triggers and fields', () => {
+test('parser rejects unsupported v2 triggers and provider-specific fields', () => {
   assert.throws(
     () =>
       parseWorkflowPlan({
@@ -153,16 +177,23 @@ test('rejects unsupported v2 triggers and fields', () => {
   );
 });
 
-test('keeps special v2 names safe while returning plain maps', () => {
-  const plan = workflowV2({
-    ['__proto__']: { trigger: 'candidate', jobs: { ['__proto__']: job([checkout()]) } },
+test('parser keeps special v2 names safe while returning plain maps', () => {
+  const plan = parseWorkflowPlan({
+    version: 2,
+    workflows: {
+      ['__proto__']: { trigger: 'candidate', jobs: { ['__proto__']: job([checkout()]) } },
+    },
   });
+  if (plan.version !== 2) assert.fail('expected WorkflowPlanV2');
   assert.equal(Object.getPrototypeOf(plan.workflows), Object.prototype);
   assert.equal(Object.hasOwn(plan.workflows, '__proto__'), true);
   assert.equal(Object.hasOwn(plan.workflows.__proto__?.jobs ?? {}, '__proto__'), true);
 });
 
 test('empty v2 workflows and jobs fail closed', () => {
-  assert.throws(() => workflowV2({}), /at least one named workflow/);
-  assert.throws(() => workflowV2({ Test: { trigger: 'candidate', jobs: {} } }), /at least one job/);
+  assert.throws(() => parseWorkflowPlan({ version: 2, workflows: {} }), /at least one named workflow/);
+  assert.throws(
+    () => parseWorkflowPlan({ version: 2, workflows: { Test: { trigger: 'candidate', jobs: {} } } }),
+    /at least one job/,
+  );
 });

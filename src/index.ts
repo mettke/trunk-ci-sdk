@@ -1,6 +1,5 @@
 export {
   WORKFLOW_PLAN_VERSION,
-  WORKFLOW_PLAN_V2_VERSION,
   WorkflowValidationError,
   canonicalWorkflowPlan,
   checkout,
@@ -8,7 +7,6 @@ export {
   parseWorkflowPlan,
   run,
   workflow,
-  workflowV2,
   workflowPlanDigest,
   type CheckoutStepV1,
   type JobPlanV1,

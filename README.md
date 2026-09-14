@@ -2,17 +2,13 @@
 
 Public TypeScript SDK and contract for defining provider-neutral Trunk CI workflows without YAML.
 
-This repository is the authoring/composition side of Trunk CI. Repository code produces a plain workflow plan; the Trunk control plane remains authoritative and independently validates the submitted plan, recomputes its canonical representation and digest, selects the lifecycle workflow, binds execution and evidence to the exact immutable source revision, and applies the CI lifecycle rules.
+This repository is the authoring/composition side of Trunk CI. Repository code produces a plain workflow plan; the Trunk control plane remains authoritative and independently validates the submitted plan, recomputes its canonical representation and digest, selects the lifecycle workflow, binds execution/evidence to the exact immutable source revision, and applies CI lifecycle rules.
 
 > **Pre-release:** the package is currently version `0.0.0`, and the npm package name `trunk-ci-sdk` is provisional. Do not treat the current package name or distribution path as a stable compatibility promise yet.
 
-## Quick start
+## V1: one candidate workflow
 
-A repository's workflow entry is the fixed candidate-owned `trunk-ci.ts` path. It must default-export one workflow plan.
-
-### WorkflowPlanV1: one candidate workflow
-
-V1 remains fully supported. It represents one candidate workflow as a map of jobs:
+A repository's fixed workflow entry is `trunk-ci.ts`. WorkflowPlanV1 remains fully supported and represents one candidate workflow containing jobs:
 
 ```ts
 import { checkout, job, run, workflow } from 'trunk-ci-sdk';
@@ -23,254 +19,63 @@ export default workflow({
     run('npm ci'),
     run('npm test'),
   ]),
-  typecheck: job([
-    checkout(),
-    run('npm ci'),
-    run('npm run typecheck'),
-  ]),
 });
 ```
 
-This resolves to:
+V1 job names are labels inside that single candidate workflow. They are not independent workflow/check identities.
 
-```json
-{
-  "version": 1,
-  "jobs": {
-    "test": {
-      "steps": [
-        { "kind": "checkout" },
-        { "kind": "run", "command": "npm ci" },
-        { "kind": "run", "command": "npm test" }
-      ]
-    },
-    "typecheck": {
-      "steps": [
-        { "kind": "checkout" },
-        { "kind": "run", "command": "npm ci" },
-        { "kind": "run", "command": "npm run typecheck" }
-      ]
-    }
-  }
-}
-```
+## V2: independently named lifecycle workflows
 
-In V1, job names are labels inside the single candidate workflow. They are not independent workflow/check identities.
+WorkflowPlanV2 adds globally named workflows. Each workflow has exactly one trigger and its own internal jobs.
 
-### WorkflowPlanV2: independently named lifecycle workflows
-
-V2 adds globally named workflows. Each workflow has exactly one lifecycle trigger and its own internal jobs:
+The current trusted Trunk resolver supplies the existing runtime helpers `checkout`, `job`, and `run`. V2's new top-level structure is therefore authored as typed data rather than through a new runtime helper:
 
 ```ts
-import { checkout, job, run, workflowV2 } from 'trunk-ci-sdk';
+import { checkout, job, run, type WorkflowPlanV2 } from 'trunk-ci-sdk';
 
-export default workflowV2({
-  'Candidate CI': {
-    trigger: 'candidate',
-    jobs: {
-      test: job([
-        checkout(),
-        run('npm ci'),
-        run('npm test'),
-      ]),
+const plan = {
+  version: 2,
+  workflows: {
+    'Candidate CI': {
+      trigger: 'candidate',
+      jobs: {
+        test: job([
+          checkout(),
+          run('npm ci'),
+          run('npm test'),
+        ]),
+      },
+    },
+
+    'Post-land verification': {
+      trigger: 'landed',
+      jobs: {
+        verify: job([
+          checkout(),
+          run('npm ci'),
+          run('npm run verify'),
+        ]),
+      },
+    },
+
+    Cleanup: {
+      trigger: 'cleanup',
+      jobs: {
+        cleanup: job([
+          checkout(),
+          run('npm run cleanup'),
+        ]),
+      },
     },
   },
+} satisfies WorkflowPlanV2;
 
-  'Post-land verification': {
-    trigger: 'landed',
-    jobs: {
-      verify: job([
-        checkout(),
-        run('npm ci'),
-        run('npm run verify'),
-      ]),
-    },
-  },
-
-  Cleanup: {
-    trigger: 'cleanup',
-    jobs: {
-      cleanup: job([
-        checkout(),
-        run('npm run cleanup'),
-      ]),
-    },
-  },
-});
+export default plan;
 ```
 
-The corresponding data plan is:
-
-```json
-{
-  "version": 2,
-  "workflows": {
-    "Candidate CI": {
-      "trigger": "candidate",
-      "jobs": {
-        "test": {
-          "steps": [
-            { "kind": "checkout" },
-            { "kind": "run", "command": "npm ci" },
-            { "kind": "run", "command": "npm test" }
-          ]
-        }
-      }
-    },
-    "Post-land verification": {
-      "trigger": "landed",
-      "jobs": {
-        "verify": {
-          "steps": [
-            { "kind": "checkout" },
-            { "kind": "run", "command": "npm ci" },
-            { "kind": "run", "command": "npm run verify" }
-          ]
-        }
-      }
-    },
-    "Cleanup": {
-      "trigger": "cleanup",
-      "jobs": {
-        "cleanup": {
-          "steps": [
-            { "kind": "checkout" },
-            { "kind": "run", "command": "npm run cleanup" }
-          ]
-        }
-      }
-    }
-  }
-}
-```
-
-The workflow name is the independent scheduling/result/retry identity. Jobs remain internal execution units of that workflow. V2 intentionally does not introduce a workflow DAG, matrix expansion, conditions, cross-workflow dependencies, fan-in/fan-out, or provider-specific execution configuration.
-
-## Lifecycle triggers and source authority
-
-Every V2 workflow declares exactly one trigger:
-
-- `candidate`: runs for an exact immutable candidate revision. A configured required candidate workflow maps by its **workflow name** to Trunk's `CheckRequirement` / `CheckRun` identity for that exact candidate. Multiple required candidate workflows are independent gates; one workflow's success does not substitute for another.
-- `landed`: describes post-land CI for the exact SHA that actually won landing. Its source authority is that exact landed SHA, not whichever commit a mutable default branch points to later. It is post-land lifecycle evidence, not a candidate landing gate.
-- `cleanup`: describes generic post-land cleanup workflow code. It is materialized independently from the durable land fact and does not gate or undo landing. Destructive resource authority does not come from arbitrary workflow output or branch names; Trunk's trusted integration/capability boundaries remain authoritative.
-
-The SDK only expresses those trigger declarations. It does not create lifecycle runs, select which workflow to execute, decide which candidate workflows are required, materialize landed facts, authorize cleanup, or reconcile provider results.
-
-`checkout()` is not a branch/ref selector. It means “materialize the exact immutable repository source already bound by Trunk to this workflow attempt.” For `candidate` that source is the exact candidate SHA. For post-land lifecycle work the authority is the exact landed SHA associated with the durable land fact, never a later mutable branch head.
-
-## Where authority lives
-
-Treat `trunk-ci.ts` and this SDK as an authoring frontend. Repository-authored TypeScript is evaluated only in the bounded workflow-resolution sandbox, not inside the Trunk control-plane process. The resolver imports the exact revision's `trunk-ci.ts`, requires a default export, serializes that value as JSON, and passes the bounded result across the trust boundary. Trunk then independently parses, validates, normalizes and canonicalizes it.
-
-The bare `trunk-ci-sdk` import is part of that runtime boundary. During workflow resolution Trunk supplies its trusted SDK runtime for the exact bare module specifier. Candidate dependencies do not choose or replace the SDK implementation used by the resolver. The repository package remains the public TypeScript authoring/reference surface; it is not runtime authority.
-
-Important consequences:
-
-- **Repository-owned definition:** the workflow definition travels with immutable repository source instead of being selected from a mutable branch after dispatch.
-- **Provider-neutral plan:** provider pipeline, queue, image, executor, webhook, credential, routing and deployment-provider identifiers are not part of the workflow syntax.
-- **No ambient secret declaration:** repository workflow syntax does not grant privileged credentials or destructive authority.
-- **Strict/fail-closed data shape:** unknown fields, unknown triggers/step kinds, missing required fields, malformed objects, empty workflow/job/step collections and empty run commands are rejected.
-- **Trunk re-validates:** successful SDK construction or parsing is convenient authoring feedback, not authorization and not proof that Trunk will accept or execute the plan.
-- **Canonicalization is deterministic:** object keys are serialized lexicographically; workflow/job map insertion order does not change the canonical representation or digest. Array order remains semantic, so step order does matter.
-- **Digest is correlation/audit identity:** `workflowPlanDigest()` identifies canonical plan data. It is not candidate, landing, lifecycle, secret, provider, or destructive authority.
-
-## Workflow and job identity
-
-V1 and V2 deliberately differ here:
-
-- **V1:** the plan itself is one candidate workflow; `jobs` are its internal jobs. A V1 job name is not a V2 workflow/check identity.
-- **V2:** each key in `workflows` is a globally unique workflow name after normalization. That workflow is the independent scheduling/result/retry/cancellation unit. Its nested job names are internal to that workflow.
-- **Candidate checks:** only a V2 `candidate` workflow name maps 1:1 to the configured Trunk `CheckRequirement` / `CheckRun` name. `landed` and `cleanup` are distinct non-landing lifecycle evidence paths and do not weaken candidate CheckRun semantics.
-
-V2 workflow names and V2 job names are trimmed, non-empty, at most 120 UTF-16 code units, must not contain NUL and must be well-formed UTF-16. Well-formed supplementary Unicode and embedded CR/LF are valid. Names that collide after trimming are rejected. V1 retains its existing job-name semantics for compatibility.
-
-## Steps
-
-Both versions currently reuse the same job/step contract.
-
-### `checkout(): CheckoutStepV1`
-
-Creates a frozen checkout step for the exact source already bound to the workflow attempt. It takes no ref, branch, repository, provider, queue, image or credential argument.
-
-### `run(command: string): RunStepV1`
-
-Creates a frozen run step. `command` must contain non-whitespace text. The command is preserved as authored.
-
-A run step must execute after checkout in the same job. This is an execution rule rather than a data-shape rule: `parseWorkflowPlan()` can accept a plan whose first step is `run`, but the executor fails that job when it attempts to run without a preceding checkout.
-
-### `job(steps: readonly WorkflowStepV1[]): JobPlanV1`
-
-Builds and validates one frozen job with at least one supported step.
-
-## Plan helpers
-
-### `workflow(jobs): WorkflowPlanV1`
-
-Builds the legacy V1 single-candidate-workflow plan. This API and its canonical/digest behavior remain compatible.
-
-### `workflowV2(workflows): WorkflowPlanV2`
-
-Builds a V2 plan. `workflows` is a record whose keys are workflow names and whose values contain exactly:
+`WorkflowPlanV2` is:
 
 ```ts
-{
-  trigger: 'candidate' | 'landed' | 'cleanup';
-  jobs: Record<string, JobPlanV1>;
-}
-```
-
-At least one named workflow is required, and every named workflow must contain at least one job.
-
-## Parsing, canonicalization and digest
-
-### `parseWorkflowPlan(input: unknown): WorkflowPlan`
-
-Strictly validates unknown V1 or V2 input and returns a normalized frozen plan. The parser requires exact object keys rather than silently ignoring additions. That prevents a producer and consumer from disagreeing about fields one side ignored.
-
-Validation throws `WorkflowValidationError`. The current class has no stable machine-readable error code; callers should distinguish SDK validation failures by class rather than parsing message text.
-
-The public parser mirrors the current authoring contract so authors get early feedback. It is still not Trunk's trust boundary: Trunk independently parses and validates resolver output before that output can affect scheduling, evidence, checks or lifecycle state.
-
-### `canonicalWorkflowPlan(input: unknown): string`
-
-Validates the input and returns deterministic compact JSON. Object keys are sorted lexicographically at every level. Arrays preserve order.
-
-### `workflowPlanDigest(input: unknown): Promise<string>`
-
-Validates and canonicalizes the input, then returns the lowercase SHA-256 digest of UTF-8 canonical JSON as a 64-character hexadecimal string using Web Crypto.
-
-For identical valid V1 or V2 plans, SDK canonicalization/digest is required to match Trunk canonicalization/digest. Trunk still recomputes both itself rather than trusting SDK-provided output.
-
-## Public API reference
-
-Everything exported from `src/index.ts` is part of the current pre-release public surface.
-
-### Constants
-
-- `WORKFLOW_PLAN_VERSION`: literal `1`, retained for V1.
-- `WORKFLOW_PLAN_V2_VERSION`: literal `2`.
-
-### Types
-
-```ts
-type CheckoutStepV1 = Readonly<{ kind: 'checkout' }>;
-
-type RunStepV1 = Readonly<{
-  kind: 'run';
-  command: string;
-}>;
-
-type WorkflowStepV1 = CheckoutStepV1 | RunStepV1;
-
-type JobPlanV1 = Readonly<{
-  steps: readonly WorkflowStepV1[];
-}>;
-
-type WorkflowPlanV1 = Readonly<{
-  version: typeof WORKFLOW_PLAN_VERSION;
-  jobs: Readonly<Record<string, JobPlanV1>>;
-}>;
-
 type WorkflowTriggerV2 = 'candidate' | 'landed' | 'cleanup';
 
 type NamedWorkflowPlanV2 = Readonly<{
@@ -279,51 +84,109 @@ type NamedWorkflowPlanV2 = Readonly<{
 }>;
 
 type WorkflowPlanV2 = Readonly<{
-  version: typeof WORKFLOW_PLAN_V2_VERSION;
+  version: 2;
   workflows: Readonly<Record<string, NamedWorkflowPlanV2>>;
 }>;
-
-type WorkflowPlan = WorkflowPlanV1 | WorkflowPlanV2;
 ```
 
-`WorkflowValidationError` is the `Error` subclass used for SDK data-shape validation failures.
+The workflow name is the independent scheduling/result/retry/cancellation identity. Jobs remain internal execution units of that workflow. V2 intentionally does not introduce a workflow DAG, matrix expansion, conditions, cross-workflow dependencies, fan-in/fan-out, or provider-specific execution configuration.
 
-## Canonicalization example
+### Why there is no `workflowV2()` runtime helper
 
-Object/map insertion order is not semantic:
+Inside candidate workflow resolution, Trunk intercepts the bare `trunk-ci-sdk` module specifier and supplies a trusted resolver runtime instead of executing a candidate-selected SDK implementation. That trusted runtime currently exposes the established V1-era runtime helpers such as `checkout`, `run`, and `job`, while authoritative Trunk parsing already accepts WorkflowPlanV2 data.
 
-```ts
-import { canonicalWorkflowPlan, workflowPlanDigest, workflowV2 } from 'trunk-ci-sdk';
+A type-only `WorkflowPlanV2` import is erased before runtime and therefore does not require a new trusted resolver export. Publishing a `workflowV2()` helper before Trunk's trusted resolver runtime exposes it would make package typechecking succeed while real `trunk-ci.ts` resolution fails, so this SDK deliberately does not promise such a helper today.
 
-const first = workflowV2({
-  Beta: { trigger: 'candidate', jobs: { test: { steps: [{ kind: 'checkout' }] } } },
-  Alpha: { trigger: 'candidate', jobs: { build: { steps: [{ kind: 'checkout' }] } } },
-});
+This is a runtime-boundary constraint, not a second workflow contract: the V2 data contract remains the one Trunk validates authoritatively.
 
-const second = workflowV2({
-  Alpha: { trigger: 'candidate', jobs: { build: { steps: [{ kind: 'checkout' }] } } },
-  Beta: { trigger: 'candidate', jobs: { test: { steps: [{ kind: 'checkout' }] } } },
-});
+## Lifecycle semantics
 
-canonicalWorkflowPlan(first) === canonicalWorkflowPlan(second); // true
-await workflowPlanDigest(first) === await workflowPlanDigest(second); // true
-```
+Every V2 workflow declares exactly one trigger:
 
-Arrays are semantic. Reordering steps changes canonical data and the digest, and may also change execution validity.
+- `candidate`: runs for an exact immutable candidate revision. A configured required candidate workflow maps by its **workflow name** to Trunk's `CheckRequirement` / `CheckRun` identity for that exact candidate. Multiple required candidate workflows are independent gates; one workflow's success does not substitute for another.
+- `landed`: describes post-land CI for the exact SHA that actually won landing. Its source authority is that exact landed SHA, not whichever commit a mutable default branch points to later. It is post-land lifecycle evidence, not a candidate landing gate.
+- `cleanup`: describes generic post-land cleanup workflow code. It materializes independently from the durable land fact and does not gate or undo landing. Destructive resource authority does not come from arbitrary workflow output or branch names; Trunk's trusted integration/capability boundary remains authoritative.
 
-## Intentional exclusions
+The SDK expresses those declarations only. It does not decide which candidate workflows are required, create lifecycle runs, materialize land facts, select execution-provider configuration, authorize destructive cleanup, or reconcile provider results.
 
-The current public workflow language does **not** include:
+`checkout()` is not a branch/ref selector. It means “materialize the exact immutable repository source already bound by Trunk to this workflow attempt.” Candidate work binds the exact candidate SHA; post-land lifecycle authority is the exact landed SHA associated with the durable land fact.
 
-- execution-provider queue/image/executor or hosted-agent identifiers;
-- deployment-provider identifiers;
-- ambient secret declarations or secret authority;
-- workflow DAG edges, matrices, conditions, fan-in/fan-out or cross-workflow dependencies;
-- repository-authored selection of which workflows are required;
-- arbitrary workflow outputs as destructive-resource authority;
-- SDK-side lifecycle-run state, landed-fact materialization, retry authority or result reconciliation.
+## Workflow and job identity
 
-Those omissions are deliberate. The SDK describes provider-neutral workflow intent; Trunk owns the trusted lifecycle and integration boundaries.
+- **V1:** the plan itself is one candidate workflow; `jobs` are internal job labels.
+- **V2:** each key in `workflows` is a globally unique workflow name after normalization. That workflow is the independent scheduling/result/retry/cancellation unit; nested jobs remain internal.
+- **Candidate checks:** a V2 `candidate` workflow name maps 1:1 to the configured Trunk `CheckRequirement` / `CheckRun` name. `landed` and `cleanup` use distinct non-landing lifecycle evidence and do not weaken candidate CheckRun semantics.
+
+V2 workflow names and V2 job names are trimmed, non-empty, at most 120 UTF-16 code units, must not contain NUL, and must be well-formed UTF-16. Well-formed supplementary Unicode and embedded CR/LF remain valid. Names that collide after trimming are rejected. V1 retains its existing job-name semantics for compatibility.
+
+## Public helpers
+
+### `checkout(): CheckoutStepV1`
+
+Creates a checkout step for the exact source already bound to the attempt. It takes no ref, branch, repository, provider, queue, image, executor or credential argument.
+
+### `run(command: string): RunStepV1`
+
+Creates a run step. `command` must contain non-whitespace text and is preserved as authored.
+
+### `job(steps): JobPlanV1`
+
+Builds one job with at least one supported step. Both V1 and V2 reuse this job/step contract.
+
+### `workflow(jobs): WorkflowPlanV1`
+
+Builds the legacy V1 single-candidate-workflow plan. Its existing behavior and canonical digest remain unchanged.
+
+There is intentionally no V2 top-level runtime builder at present; use the typed V2 data form shown above.
+
+## Parsing, canonicalization and digest
+
+### `parseWorkflowPlan(input: unknown): WorkflowPlan`
+
+Strictly validates unknown V1 or V2 data and returns a normalized frozen plan. It requires exact object keys rather than silently ignoring additions. Validation throws `WorkflowValidationError`.
+
+This package-side parser is author tooling, not runtime authority. Trunk independently parses resolver output at its trust boundary before that output can affect scheduling, evidence, checks or lifecycle state.
+
+### `canonicalWorkflowPlan(input: unknown): string`
+
+Validates the input and returns deterministic compact JSON. Object keys are sorted lexicographically at every level; arrays preserve order.
+
+### `workflowPlanDigest(input: unknown): Promise<string>`
+
+Validates and canonicalizes the input, then returns the lowercase SHA-256 digest of UTF-8 canonical JSON as 64 hexadecimal characters.
+
+For identical valid V1 or V2 plans, SDK canonicalization/digest must match Trunk canonicalization/digest. Trunk recomputes both itself rather than trusting SDK-provided output. The digest is correlation/audit identity only; it is not candidate, landing, lifecycle, provider, secret or destructive authority.
+
+## Trust boundary and provider neutrality
+
+Treat `trunk-ci.ts` and this SDK as an authoring frontend. Repository-authored TypeScript runs only in the bounded workflow-resolution sandbox. Trunk receives serialized data and independently validates and canonicalizes it.
+
+Important consequences:
+
+- repository workflow definition is revision-owned through the fixed `trunk-ci.ts` path;
+- Buildkite or other provider pipeline/queue/image/executor/webhook/credential/routing details are not part of WorkflowPlanV2;
+- deployment-provider IDs are not part of WorkflowPlanV2;
+- repository syntax does not grant ambient privileged secrets or destructive authority;
+- unknown fields/triggers/step kinds and malformed or empty structures fail closed;
+- successful SDK parsing/typechecking is author feedback, not Trunk authorization;
+- no workflow DAG, matrix, conditions, fan-in/fan-out, cross-workflow dependency language or arbitrary destructive outputs are introduced by V2;
+- SDK helpers do not replace Trunk's strict validation, workflow selection, lifecycle state, source authority or check semantics.
+
+## Public types
+
+The public type surface includes:
+
+- `CheckoutStepV1`
+- `RunStepV1`
+- `WorkflowStepV1`
+- `JobPlanV1`
+- `WorkflowPlanV1`
+- `WorkflowTriggerV2`
+- `NamedWorkflowPlanV2`
+- `WorkflowPlanV2`
+- `WorkflowPlan` (`WorkflowPlanV1 | WorkflowPlanV2`)
+
+`WORKFLOW_PLAN_VERSION` remains the V1 runtime constant for compatibility. V2 uses the literal discriminant `version: 2` in its type so repository-authored V2 does not need a new runtime export from the trusted resolver SDK shim.
 
 ## Development and validation
 
@@ -337,7 +200,7 @@ npm run check
 npm run build
 ```
 
-The repository's merge-gate path is:
+The repository merge-gate path is:
 
 ```sh
 ./validate.sh

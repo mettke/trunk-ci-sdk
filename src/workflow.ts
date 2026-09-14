@@ -1,5 +1,5 @@
 export const WORKFLOW_PLAN_VERSION = 1 as const;
-export const WORKFLOW_PLAN_V2_VERSION = 2 as const;
+const WORKFLOW_PLAN_V2_VERSION = 2 as const;
 
 export type CheckoutStepV1 = Readonly<{
   kind: 'checkout';
@@ -29,7 +29,7 @@ export type NamedWorkflowPlanV2 = Readonly<{
 }>;
 
 export type WorkflowPlanV2 = Readonly<{
-  version: typeof WORKFLOW_PLAN_V2_VERSION;
+  version: 2;
   workflows: Readonly<Record<string, NamedWorkflowPlanV2>>;
 }>;
 
@@ -60,11 +60,6 @@ export function job(steps: readonly WorkflowStepV1[]): JobPlanV1 {
 /** Build the legacy single-candidate-workflow V1 plan. */
 export function workflow(jobs: Readonly<Record<string, JobPlanV1>>): WorkflowPlanV1 {
   return parseWorkflowPlanV1({ version: WORKFLOW_PLAN_VERSION, jobs });
-}
-
-/** Build a V2 plan containing independently named lifecycle workflows. */
-export function workflowV2(workflows: Readonly<Record<string, NamedWorkflowPlanV2>>): WorkflowPlanV2 {
-  return parseWorkflowPlanV2({ version: WORKFLOW_PLAN_V2_VERSION, workflows });
 }
 
 /**
@@ -119,12 +114,12 @@ function parseWorkflowPlanV2(value: Record<string, unknown>): WorkflowPlanV2 {
       throw new WorkflowValidationError(`duplicate workflow ${JSON.stringify(name)} after normalization`);
     }
     const label = `workflow.workflows[${JSON.stringify(rawName)}]`;
-    const value = asRecord(workflowsInput[rawName], label);
-    assertExactKeys(value, ['trigger', 'jobs'], label);
+    const workflow = asRecord(workflowsInput[rawName], label);
+    assertExactKeys(workflow, ['trigger', 'jobs'], label);
     Object.defineProperty(workflows, name, {
       value: Object.freeze({
-        trigger: parseTrigger(value.trigger, `${label}.trigger`),
-        jobs: parseJobs(value.jobs, `${label}.jobs`, undefined, true),
+        trigger: parseTrigger(workflow.trigger, `${label}.trigger`),
+        jobs: parseJobs(workflow.jobs, `${label}.jobs`, undefined, true),
       }),
       enumerable: true,
       writable: false,
