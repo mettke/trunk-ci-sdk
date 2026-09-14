@@ -129,9 +129,11 @@ Creates a checkout step for the exact source already bound to the attempt. It ta
 
 Creates a run step. `command` must contain non-whitespace text and is preserved as authored.
 
+A `run()` step requires a preceding `checkout()` in the same job. The SDK data parser accepts step order as authored, but the real executor fails a job if it reaches `run()` before checkout. Put `checkout()` before the first `run()` in every executable job.
+
 ### `job(steps): JobPlanV1`
 
-Builds one job with at least one supported step. Both V1 and V2 reuse this job/step contract.
+Builds one job with at least one supported step. Both V1 and V2 reuse this job/step contract. `job()` validates the data shape but does not replace the executor's checkout-before-run requirement above.
 
 ### `workflow(jobs): WorkflowPlanV1`
 
