@@ -1,4 +1,5 @@
 export const WORKFLOW_PLAN_VERSION = 1 as const;
+export const WORKFLOW_PLAN_V2_VERSION = 2 as const;
 
 export type CheckoutStepV1 = Readonly<{
   kind: 'checkout';
@@ -19,6 +20,20 @@ export type WorkflowPlanV1 = Readonly<{
   version: typeof WORKFLOW_PLAN_VERSION;
   jobs: Readonly<Record<string, JobPlanV1>>;
 }>;
+
+export type WorkflowTriggerV2 = 'candidate' | 'landed' | 'cleanup';
+
+export type NamedWorkflowPlanV2 = Readonly<{
+  trigger: WorkflowTriggerV2;
+  jobs: Readonly<Record<string, JobPlanV1>>;
+}>;
+
+export type WorkflowPlanV2 = Readonly<{
+  version: typeof WORKFLOW_PLAN_V2_VERSION;
+  workflows: Readonly<Record<string, NamedWorkflowPlanV2>>;
+}>;
+
+export type WorkflowPlan = WorkflowPlanV1 | WorkflowPlanV2;
 
 export class WorkflowValidationError extends Error {
   constructor(message: string) {
@@ -42,39 +57,27 @@ export function job(steps: readonly WorkflowStepV1[]): JobPlanV1 {
   return parseJob({ steps }, 'job');
 }
 
+/** Build the legacy single-candidate-workflow V1 plan. */
 export function workflow(jobs: Readonly<Record<string, JobPlanV1>>): WorkflowPlanV1 {
-  return parseWorkflowPlan({ version: WORKFLOW_PLAN_VERSION, jobs });
+  return parseWorkflowPlanV1({ version: WORKFLOW_PLAN_VERSION, jobs });
 }
 
-export function parseWorkflowPlan(input: unknown): WorkflowPlanV1 {
+/** Build a V2 plan containing independently named lifecycle workflows. */
+export function workflowV2(workflows: Readonly<Record<string, NamedWorkflowPlanV2>>): WorkflowPlanV2 {
+  return parseWorkflowPlanV2({ version: WORKFLOW_PLAN_V2_VERSION, workflows });
+}
+
+/**
+ * Authoring-side strict parser for the public data contract.
+ * Trunk independently re-parses and canonicalizes resolver output at its trust boundary.
+ */
+export function parseWorkflowPlan(input: unknown): WorkflowPlan {
   const value = asRecord(input, 'workflow');
-  assertExactKeys(value, ['version', 'jobs'], 'workflow');
-  if (value.version !== WORKFLOW_PLAN_VERSION) {
-    throw new WorkflowValidationError(`workflow version must be ${WORKFLOW_PLAN_VERSION}`);
-  }
-
-  const jobsInput = asRecord(value.jobs, 'workflow.jobs');
-  const names = Object.keys(jobsInput);
-  if (!names.length) throw new WorkflowValidationError('workflow must contain at least one job');
-
-  const jobs: Record<string, JobPlanV1> = {};
-  for (const rawName of names) {
-    const name = normalizeCheckName(rawName);
-    if (Object.hasOwn(jobs, name)) {
-      throw new WorkflowValidationError(`duplicate workflow job ${JSON.stringify(name)} after normalization`);
-    }
-    Object.defineProperty(jobs, name, {
-      value: parseJob(jobsInput[rawName], `workflow.jobs[${JSON.stringify(rawName)}]`),
-      enumerable: true,
-      writable: false,
-      configurable: false,
-    });
-  }
-
-  return Object.freeze({
-    version: WORKFLOW_PLAN_VERSION,
-    jobs: Object.freeze(jobs),
-  });
+  if (value.version === WORKFLOW_PLAN_VERSION) return parseWorkflowPlanV1(value);
+  if (value.version === WORKFLOW_PLAN_V2_VERSION) return parseWorkflowPlanV2(value);
+  throw new WorkflowValidationError(
+    `workflow version must be ${WORKFLOW_PLAN_VERSION} or ${WORKFLOW_PLAN_V2_VERSION}`,
+  );
 }
 
 export function canonicalWorkflowPlan(input: unknown): string {
@@ -85,6 +88,87 @@ export async function workflowPlanDigest(input: unknown): Promise<string> {
   const bytes = new TextEncoder().encode(canonicalWorkflowPlan(input));
   const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function parseWorkflowPlanV1(value: Record<string, unknown>): WorkflowPlanV1 {
+  assertExactKeys(value, ['version', 'jobs'], 'workflow');
+  if (value.version !== WORKFLOW_PLAN_VERSION) {
+    throw new WorkflowValidationError(`workflow version must be ${WORKFLOW_PLAN_VERSION}`);
+  }
+  const jobs = parseJobs(value.jobs, 'workflow.jobs', 'workflow must contain at least one job');
+  return Object.freeze({
+    version: WORKFLOW_PLAN_VERSION,
+    jobs,
+  });
+}
+
+function parseWorkflowPlanV2(value: Record<string, unknown>): WorkflowPlanV2 {
+  assertExactKeys(value, ['version', 'workflows'], 'workflow');
+  if (value.version !== WORKFLOW_PLAN_V2_VERSION) {
+    throw new WorkflowValidationError(`workflow version must be ${WORKFLOW_PLAN_V2_VERSION}`);
+  }
+
+  const workflowsInput = asRecord(value.workflows, 'workflow.workflows');
+  const names = Object.keys(workflowsInput);
+  if (!names.length) throw new WorkflowValidationError('workflow must contain at least one named workflow');
+
+  const workflows: Record<string, NamedWorkflowPlanV2> = {};
+  for (const rawName of names) {
+    const name = normalizeWorkflowName(rawName);
+    if (Object.hasOwn(workflows, name)) {
+      throw new WorkflowValidationError(`duplicate workflow ${JSON.stringify(name)} after normalization`);
+    }
+    const label = `workflow.workflows[${JSON.stringify(rawName)}]`;
+    const value = asRecord(workflowsInput[rawName], label);
+    assertExactKeys(value, ['trigger', 'jobs'], label);
+    Object.defineProperty(workflows, name, {
+      value: Object.freeze({
+        trigger: parseTrigger(value.trigger, `${label}.trigger`),
+        jobs: parseJobs(value.jobs, `${label}.jobs`, undefined, true),
+      }),
+      enumerable: true,
+      writable: false,
+      configurable: false,
+    });
+  }
+
+  return Object.freeze({
+    version: WORKFLOW_PLAN_V2_VERSION,
+    workflows: Object.freeze(workflows),
+  });
+}
+
+function parseJobs(
+  input: unknown,
+  label: string,
+  emptyMessage = `${label} must contain at least one job`,
+  requireTransportSafeName = false,
+): Readonly<Record<string, JobPlanV1>> {
+  const jobsInput = asRecord(input, label);
+  const names = Object.keys(jobsInput);
+  if (!names.length) throw new WorkflowValidationError(emptyMessage);
+
+  const jobs: Record<string, JobPlanV1> = {};
+  for (const rawName of names) {
+    const name = requireTransportSafeName
+      ? normalizeV2JobName(rawName)
+      : normalizeName(rawName, 'workflow job name');
+    if (Object.hasOwn(jobs, name)) {
+      throw new WorkflowValidationError(`duplicate workflow job ${JSON.stringify(name)} after normalization`);
+    }
+    Object.defineProperty(jobs, name, {
+      value: parseJob(jobsInput[rawName], `${label}[${JSON.stringify(rawName)}]`),
+      enumerable: true,
+      writable: false,
+      configurable: false,
+    });
+  }
+  return Object.freeze(jobs);
+}
+
+function parseTrigger(input: unknown, label: string): WorkflowTriggerV2 {
+  if (input === 'candidate' || input === 'landed' || input === 'cleanup') return input;
+  throw new WorkflowValidationError(`${label} must be one of "candidate", "landed", or "cleanup"`);
 }
 
 function parseJob(input: unknown, label: string): JobPlanV1 {
@@ -123,11 +207,42 @@ function parseStep(input: unknown, label: string): WorkflowStepV1 {
   throw new WorkflowValidationError(`${label}.kind is not supported`);
 }
 
-function normalizeCheckName(value: string): string {
-  const name = value.trim();
-  if (!name) throw new WorkflowValidationError('workflow job name must not be empty');
-  if (name.length > 120) throw new WorkflowValidationError('workflow job name is too long');
+function normalizeWorkflowName(value: string): string {
+  const name = normalizeName(value, 'workflow name');
+  if (name.includes('\0')) throw new WorkflowValidationError('workflow name must not contain NUL');
+  if (!isWellFormedUtf16(name)) throw new WorkflowValidationError('workflow name must be well-formed Unicode');
   return name;
+}
+
+function normalizeV2JobName(value: string): string {
+  const name = normalizeName(value, 'workflow job name');
+  if (name.includes('\0')) throw new WorkflowValidationError('WorkflowPlanV2 job name must not contain NUL');
+  if (!isWellFormedUtf16(name)) {
+    throw new WorkflowValidationError('WorkflowPlanV2 job name must be well-formed Unicode');
+  }
+  return name;
+}
+
+function normalizeName(value: string, label: string): string {
+  const name = value.trim();
+  if (!name) throw new WorkflowValidationError(`${label} must not be empty`);
+  if (name.length > 120) throw new WorkflowValidationError(`${label} is too long`);
+  return name;
+}
+
+function isWellFormedUtf16(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      if (index + 1 >= value.length) return false;
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return false;
+      index += 1;
+      continue;
+    }
+    if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) return false;
+  }
+  return true;
 }
 
 function asRecord(value: unknown, label: string): Record<string, unknown> {
