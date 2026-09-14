@@ -10,7 +10,11 @@ export {
   workflowPlanDigest,
   type CheckoutStepV1,
   type JobPlanV1,
+  type NamedWorkflowPlanV2,
   type RunStepV1,
+  type WorkflowPlan,
   type WorkflowPlanV1,
+  type WorkflowPlanV2,
   type WorkflowStepV1,
+  type WorkflowTriggerV2,
 } from './workflow.ts';
